@@ -289,32 +289,52 @@ async function loadAll() {
   return {portfolio, holdings, equity_curve, news:newsItems, capitol:capitolData, signals:signalData, summary, marketStrip};
 }
 
-async function loadNews(tickers) {
+// ── Multi-source RSS news ─────────────────────────────────────────────────────
+const RSS_FEEDS = [
+  {name:'Yahoo Finance', url:'https://finance.yahoo.com/news/rssindex',                        color:'#7c3aed'},
+  {name:'Bloomberg',     url:'https://feeds.bloomberg.com/markets/news.rss',                   color:'#f59e0b'},
+  {name:'WSJ Markets',   url:'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',                  color:'#1d4ed8'},
+  {name:'WSJ Economy',   url:'https://feeds.a.dj.com/rss/RSSWorldNews.xml',                    color:'#1d4ed8'},
+  {name:'MarketWatch',   url:'https://feeds.marketwatch.com/marketwatch/topstories/',           color:'#059669'},
+  {name:'CNBC Markets',  url:'https://www.cnbc.com/id/100003114/device/rss/rss.html',           color:'#dc2626'},
+];
+
+async function fetchRSSFeed(feed) {
   try {
-    // Use Alpaca's News API (Benzinga) — works directly from browser, no proxy needed
-    const symbols = tickers.filter(t => !t.startsWith('^')).join(',');
-    const url = `https://data.alpaca.markets/v1beta1/news?symbols=${symbols}&limit=12&sort=desc`;
-    const r = await fetch(url, {headers: AH, signal: AbortSignal.timeout(10000)});
-    if (!r.ok) throw new Error(r.status);
-    const d = await r.json();
-    const items = d?.news || [];
-    return items.map(n => {
-      const title = n.headline || '';
-      const blurb = n.summary || '';
-      const pub   = n.created_at || '';
-      const syms  = (n.symbols || []).slice(0,3);
-      const matched = tickers.filter(t=>syms.includes(t)||title.toUpperCase().includes(t)||blurb.toUpperCase().includes(t));
-      const src = n.source==='benzinga'?'Benzinga':n.source||'News';
-      const image = n.images?.find(img=>img.size==='thumb')?.url || n.images?.[0]?.url || null;
+    const proxy = 'https://corsproxy.io/?';
+    const r = await fetch(proxy + encodeURIComponent(feed.url), {signal: AbortSignal.timeout(9000)});
+    if (!r.ok) return [];
+    const text = await r.text();
+    const doc = new DOMParser().parseFromString(text, 'text/xml');
+    return [...doc.querySelectorAll('item')].slice(0, 5).map(item => {
+      const title   = item.querySelector('title')?.textContent?.trim() || '';
+      // <link> in RSS is a text node after the element — try multiple ways
+      const linkEl  = item.querySelector('link');
+      const link    = linkEl?.textContent?.trim() || linkEl?.nextSibling?.textContent?.trim() || '';
+      const desc    = (item.querySelector('description')?.textContent || '').replace(/<[^>]+>/g,'').trim();
+      const pubDate = item.querySelector('pubDate')?.textContent?.trim() || '';
+      const date    = pubDate ? new Date(pubDate) : new Date();
       return {
-        src, time: pub?timeAgo(pub):'?',
-        tickers: syms.length ? syms : (matched.length ? matched.slice(0,3) : []),
-        title, blurb: blurb.slice(0,240),
-        sentiment: sentimentOf(title+' '+blurb),
-        image, url: n.url||null,
+        src: feed.name, srcColor: feed.color,
+        time: timeAgo(date.toISOString()),
+        date,
+        tickers: [],
+        title, blurb: desc.slice(0, 240),
+        sentiment: sentimentOf(title + ' ' + desc),
+        image: null, url: link || null,
       };
-    }).filter(n=>n.title);
-  } catch(e) { console.error('News error:',e); return []; }
+    }).filter(n => n.title && n.title.length > 8);
+  } catch(e) {
+    console.warn(`RSS failed [${feed.name}]:`, e.message);
+    return [];
+  }
+}
+
+async function loadNews(tickers) {
+  const results = await Promise.allSettled(RSS_FEEDS.map(f => fetchRSSFeed(f)));
+  const all = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+  all.sort((a, b) => b.date - a.date);
+  return all.slice(0, 24);
 }
 
 async function loadCapitol() {
@@ -867,11 +887,15 @@ function NewsFeed({news}){
     <div style={{background:'var(--bg-1)',border:'1px solid var(--border)',borderRadius:14,display:'flex',flexDirection:'column'}}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 20px 12px',borderBottom:'1px solid var(--border)'}}>
         <div>
-          <div style={{fontSize:14,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
+          <div style={{fontSize:14,fontWeight:600,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             Market News
-            <span style={{fontSize:10,color:'var(--accent)',background:'var(--accent-soft)',padding:'2px 7px',borderRadius:999,fontWeight:500,textTransform:'uppercase',letterSpacing:'0.04em'}}>Benzinga · Live</span>
+            <span style={{fontSize:10,color:'var(--up)',background:'var(--up-soft)',padding:'2px 7px',borderRadius:999,fontWeight:500,textTransform:'uppercase',letterSpacing:'0.04em'}}>6 Sources · Live</span>
           </div>
-          <div style={{fontSize:11.5,color:'var(--text-2)',marginTop:2}}>Filtered to your holdings · real-time</div>
+          <div style={{fontSize:11,color:'var(--text-2)',marginTop:4,display:'flex',gap:8,flexWrap:'wrap'}}>
+            {RSS_FEEDS.map(f=>(
+              <span key={f.name} style={{color:f.color,fontWeight:500,fontSize:10}}>{f.name}</span>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -899,7 +923,7 @@ function NewsFeed({news}){
                 <div style={{display:'flex',flexDirection:'column',gap:5,flex:1,minWidth:0}}>
                   {/* Meta row */}
                   <div style={{display:'flex',alignItems:'center',gap:6,fontSize:10.5,color:'var(--text-2)',textTransform:'uppercase',letterSpacing:'0.05em',flexWrap:'wrap'}}>
-                    <span style={{color:'var(--accent)',fontWeight:500}}>{n.src}</span>
+                    <span style={{color:n.srcColor||'var(--accent)',fontWeight:600}}>{n.src}</span>
                     <span style={{opacity:0.4}}>·</span>
                     <span className="num">{n.time} ago</span>
                     <span style={{opacity:0.4}}>·</span>
