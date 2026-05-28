@@ -134,7 +134,7 @@ async function getBars(sym) {
   } catch { return []; }
 }
 
-// Detail chart bars — supports 1D intraday through 1Y daily
+// Detail chart bars — supports 1D intraday through 5Y
 async function getDetailBars(sym, range) {
   const R = {
     '1D':  {tf:'15Min', limit:30},
@@ -144,6 +144,9 @@ async function getDetailBars(sym, range) {
     '3M':  {tf:'1Day',  limit:66},
     '6M':  {tf:'1Day',  limit:132},
     '1Y':  {tf:'1Day',  limit:253},
+    '2Y':  {tf:'1Day',  limit:505},
+    '3Y':  {tf:'1Week', limit:157},
+    '5Y':  {tf:'1Week', limit:261},
   };
   const {tf, limit} = R[range] || R['1M'];
   try {
@@ -1468,7 +1471,7 @@ function OrdersPanel(){
 // STOCK DETAIL MODAL
 // ═══════════════════════════════════════════════════════
 function StockModal({symbol, holdings, onClose}){
-  const RANGES=['1D','5D','10D','1M','3M','6M','1Y'];
+  const RANGES=['1D','5D','10D','1M','3M','6M','1Y','2Y','3Y','5Y'];
   const [range,setRange]=useState('3M');
   const [bars,setBars]=useState([]);
   const [chartLoading,setChartLoading]=useState(true);
