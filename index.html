@@ -134,27 +134,27 @@ async function getBars(sym) {
   } catch { return []; }
 }
 
-// Detail chart bars — supports 1D intraday through 5Y
+// Detail chart bars — uses explicit start dates (limit alone returns only today's bar)
 async function getDetailBars(sym, range) {
+  const ago=n=>new Date(Date.now()-n*864e5).toISOString().split('T')[0];
+  const today=new Date().toISOString().split('T')[0];
   const R = {
-    '1D':  {tf:'15Min', limit:30},
-    '5D':  {tf:'1Hour', limit:50},
-    '10D': {tf:'1Hour', limit:100},
-    '1M':  {tf:'1Day',  limit:23},
-    '3M':  {tf:'1Day',  limit:66},
-    '6M':  {tf:'1Day',  limit:132},
-    '1Y':  {tf:'1Day',  limit:253},
-    '2Y':  {tf:'1Day',  limit:505},
-    '3Y':  {tf:'1Week', limit:157},
-    '5Y':  {tf:'1Week', limit:261},
+    '1D':  {tf:'15Min',  start:today,      limit:100},
+    '5D':  {tf:'1Hour',  start:ago(10),    limit:250},
+    '10D': {tf:'1Hour',  start:ago(16),    limit:350},
+    '1M':  {tf:'1Day',   start:ago(35),    limit:50},
+    '3M':  {tf:'1Day',   start:ago(100),   limit:120},
+    '6M':  {tf:'1Day',   start:ago(185),   limit:200},
+    '1Y':  {tf:'1Day',   start:ago(370),   limit:400},
+    '2Y':  {tf:'1Day',   start:ago(740),   limit:800},
+    '3Y':  {tf:'1Week',  start:ago(1110),  limit:200},
+    '5Y':  {tf:'1Week',  start:ago(1830),  limit:300},
   };
-  const {tf, limit} = R[range] || R['1M'];
-  try {
-    const params = {timeframe:tf, limit, adjustment:'raw', feed:'iex'};
-    if(range==='1D') params.start = new Date().toISOString().split('T')[0];
-    const d = await alpData(`/stocks/${sym}/bars`, params);
-    return Array.isArray(d.bars) ? d.bars : [];
-  } catch { return []; }
+  const {tf,start,limit}=R[range]||R['1M'];
+  try{
+    const d=await alpData(`/stocks/${sym}/bars`,{timeframe:tf,start,limit,adjustment:'raw',feed:'iex'});
+    return Array.isArray(d.bars)?d.bars:[];
+  }catch{return[];}
 }
 
 function calcMomentum(bars) {
@@ -1521,8 +1521,10 @@ function StockModal({symbol, holdings, onClose}){
   const fmtBarDate=b=>{
     if(!b)return'';
     const d=new Date(b.t);
-    if(range==='1D')return d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-    return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:range==='1Y'?'numeric':undefined});
+    if(range==='1D') return d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    const showYear=['6M','1Y','2Y','3Y','5Y'].includes(range);
+    if(showYear) return d.toLocaleDateString('en-US',{month:'short',year:'2-digit'});
+    return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
   };
 
   return (
@@ -1559,7 +1561,7 @@ function StockModal({symbol, holdings, onClose}){
               </div>
             )}
           </div>
-          {hover&&<div style={{fontSize:11,color:'var(--text-3)',marginTop:5}}>{fmtBarDate(bars[hover.idx])}</div>}
+          {hover&&<div style={{fontSize:11,color:'var(--text-3)',marginTop:5}}>{new Date(bars[hover.idx]?.t).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})}</div>}
         </div>
 
         {/* Range selector */}
