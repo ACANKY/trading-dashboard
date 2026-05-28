@@ -289,57 +289,94 @@ async function loadAll() {
   return {portfolio, holdings, equity_curve, news:newsItems, capitol:capitolData, signals:signalData, summary, marketStrip};
 }
 
-// ── Multi-source RSS news ─────────────────────────────────────────────────────
-const RSS_FEEDS = [
-  {name:'Yahoo Finance', url:'https://finance.yahoo.com/news/rssindex',                      color:'#7c3aed'},
-  {name:'Bloomberg',     url:'https://feeds.bloomberg.com/markets/news.rss',                 color:'#f59e0b'},
-  {name:'WSJ Markets',   url:'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',                color:'#1d4ed8'},
-  {name:'WSJ Economy',   url:'https://feeds.a.dj.com/rss/RSSWorldNews.xml',                  color:'#1d4ed8'},
-  {name:'MarketWatch',   url:'https://feeds.marketwatch.com/marketwatch/topstories/',         color:'#059669'},
-  {name:'CNBC Markets',  url:'https://www.cnbc.com/id/100003114/device/rss/rss.html',         color:'#dc2626'},
-];
-
-// 15-min cache — rss2json.com free tier is 500 req/day
+// ── Multi-source news ─────────────────────────────────────────────────────────
 let _newsCache = null;
 let _newsCacheTs = 0;
 function bustNewsCache(){ _newsCacheTs = 0; }
 
-async function fetchRSSFeed(feed) {
-  try {
-    // rss2json.com converts RSS → JSON and handles CORS natively (no proxy needed)
-    const api = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}&count=5`;
-    const r = await fetch(api, {signal: AbortSignal.timeout(10000)});
-    if (!r.ok) return [];
-    const d = await r.json();
-    if (d.status !== 'ok') return [];
-    return (d.items || []).map(item => {
-      const title = item.title?.trim() || '';
-      const desc  = (item.description || '').replace(/<[^>]+>/g,'').trim();
-      const date  = item.pubDate ? new Date(item.pubDate) : new Date();
-      return {
-        src: feed.name, srcColor: feed.color,
-        time: timeAgo(date.toISOString()),
-        date, tickers: [],
-        title, blurb: desc.slice(0, 240),
-        sentiment: sentimentOf(title + ' ' + desc),
-        image: item.enclosure?.link || null,
-        url: item.link || null,
-      };
-    }).filter(n => n.title && n.title.length > 8);
-  } catch(e) {
-    console.warn(`RSS failed [${feed.name}]:`, e.message);
-    return [];
-  }
+// Domain → display name + colour
+const SRC_MAP = {
+  'marketwatch.com': {name:'MarketWatch', color:'#059669'},
+  'cnbc.com':        {name:'CNBC',        color:'#dc2626'},
+  'reuters.com':     {name:'Reuters',     color:'#ff8000'},
+  'bloomberg.com':   {name:'Bloomberg',   color:'#f59e0b'},
+  'wsj.com':         {name:'WSJ',         color:'#1d4ed8'},
+  'ft.com':          {name:'FT',          color:'#f97316'},
+  'yahoo.com':       {name:'Yahoo Fin',   color:'#7c3aed'},
+  'apnews.com':      {name:'AP News',     color:'#cc0000'},
+  'barrons.com':     {name:"Barron's",    color:'#1d4ed8'},
+  'benzinga.com':    {name:'Benzinga',    color:'#6b7280'},
+};
+function srcFromUrl(url){
+  try{
+    const host=new URL(url).hostname.replace(/^www\./,'');
+    for(const [k,v] of Object.entries(SRC_MAP)) if(host.endsWith(k)) return v;
+  }catch{}
+  return {name:'News',color:'#6b7280'};
 }
 
-async function loadNews(tickers) {
-  // Serve from cache if < 15 min old (saves API quota)
-  if (_newsCache && (Date.now() - _newsCacheTs) < 15 * 60 * 1000) return _newsCache;
-  const results = await Promise.allSettled(RSS_FEEDS.map(f => fetchRSSFeed(f)));
-  const all = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-  all.sort((a, b) => b.date - a.date);
-  const news = all.slice(0, 24);
-  _newsCache = news; _newsCacheTs = Date.now();
+// 1. Alpaca News API — stock-specific, always works, shows real source domain
+async function fetchAlpacaNews(tickers){
+  try{
+    const syms=tickers.filter(t=>!t.startsWith('^')).join(',');
+    const r=await fetch(`https://data.alpaca.markets/v1beta1/news?symbols=${syms}&limit=10&sort=desc`,
+      {headers:AH,signal:AbortSignal.timeout(10000)});
+    if(!r.ok) return [];
+    const d=await r.json();
+    return (d?.news||[]).map(n=>{
+      const {name:src,color:srcColor}=srcFromUrl(n.url||'');
+      const title=n.headline||''; const blurb=(n.summary||'').slice(0,240);
+      const date=n.created_at?new Date(n.created_at):new Date();
+      return{src,srcColor,time:timeAgo(date.toISOString()),date,
+        tickers:(n.symbols||[]).slice(0,3),title,blurb,
+        sentiment:sentimentOf(title+' '+blurb),
+        image:n.images?.find(i=>i.size==='thumb')?.url||null,url:n.url||null};
+    }).filter(n=>n.title);
+  }catch{return[];}
+}
+
+// 2. RSS feeds via allorigins proxy — supplements Alpaca with broader market news
+const RSS_FEEDS=[
+  {name:'Reuters',     url:'https://feeds.reuters.com/reuters/businessNews', color:'#ff8000'},
+  {name:'Reuters Mkts',url:'https://feeds.reuters.com/reuters/marketsNews',  color:'#ff8000'},
+  {name:'CNBC Markets',url:'https://www.cnbc.com/id/100003114/device/rss/rss.html',color:'#dc2626'},
+  {name:'MarketWatch', url:'https://feeds.marketwatch.com/marketwatch/topstories/',color:'#059669'},
+  {name:'AP Business', url:'https://feeds.apnews.com/rss/apf-business',      color:'#cc0000'},
+];
+async function fetchRSSFeed(feed){
+  try{
+    const proxy=`https://api.allorigins.win/get?url=${encodeURIComponent(feed.url)}`;
+    const r=await fetch(proxy,{signal:AbortSignal.timeout(10000)});
+    if(!r.ok) return [];
+    const j=await r.json();
+    if(!j.contents) return [];
+    const doc=new DOMParser().parseFromString(j.contents,'text/xml');
+    return[...doc.querySelectorAll('item')].slice(0,4).map(item=>{
+      const title=item.querySelector('title')?.textContent?.trim()||'';
+      const link=item.getElementsByTagName('link')[0]?.textContent?.trim()||'';
+      const desc=(item.querySelector('description')?.textContent||'').replace(/<[^>]+>/g,'').trim();
+      const pubDate=item.querySelector('pubDate')?.textContent?.trim()||'';
+      const date=pubDate?new Date(pubDate):new Date();
+      return{src:feed.name,srcColor:feed.color,time:timeAgo(date.toISOString()),
+        date,tickers:[],title,blurb:desc.slice(0,240),
+        sentiment:sentimentOf(title+' '+desc),image:null,url:link||null};
+    }).filter(n=>n.title&&n.title.length>8);
+  }catch(e){console.warn(`RSS [${feed.name}] failed:`,e.message);return[];}
+}
+
+async function loadNews(tickers){
+  if(_newsCache&&(Date.now()-_newsCacheTs)<15*60*1000) return _newsCache;
+  const[alpacaRes,...rssRes]=await Promise.allSettled([
+    fetchAlpacaNews(tickers),
+    ...RSS_FEEDS.map(f=>fetchRSSFeed(f)),
+  ]);
+  const all=[
+    ...(alpacaRes.status==='fulfilled'?alpacaRes.value:[]),
+    ...rssRes.flatMap(r=>r.status==='fulfilled'?r.value:[]),
+  ];
+  all.sort((a,b)=>b.date-a.date);
+  const news=all.slice(0,24);
+  _newsCache=news; _newsCacheTs=Date.now();
   return news;
 }
 
@@ -895,10 +932,10 @@ function NewsFeed({news}){
         <div>
           <div style={{fontSize:14,fontWeight:600,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             Market News
-            <span style={{fontSize:10,color:'var(--up)',background:'var(--up-soft)',padding:'2px 7px',borderRadius:999,fontWeight:500,textTransform:'uppercase',letterSpacing:'0.04em'}}>6 Sources · Live</span>
+            <span style={{fontSize:10,color:'var(--up)',background:'var(--up-soft)',padding:'2px 7px',borderRadius:999,fontWeight:500,textTransform:'uppercase',letterSpacing:'0.04em'}}>Multi-Source · Live</span>
           </div>
           <div style={{fontSize:11,color:'var(--text-2)',marginTop:4,display:'flex',gap:8,flexWrap:'wrap'}}>
-            {RSS_FEEDS.map(f=>(
+            {[{name:'Reuters',color:'#ff8000'},{name:'CNBC',color:'#dc2626'},{name:'MarketWatch',color:'#059669'},{name:'AP News',color:'#cc0000'},{name:'Bloomberg',color:'#f59e0b'},{name:'WSJ',color:'#1d4ed8'}].map(f=>(
               <span key={f.name} style={{color:f.color,fontWeight:500,fontSize:10}}>{f.name}</span>
             ))}
           </div>
