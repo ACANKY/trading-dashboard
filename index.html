@@ -167,18 +167,18 @@ async function fetchLatestPrices(symbols) {
   if (!symbols || !symbols.length) return {};
   try {
     const syms = symbols.join(',');
-    const d = await alpData('/stocks/trades/latest', {symbols: syms, feed: 'iex'});
-    const trades = d?.trades || {};
+    // Use snapshots endpoint — returns latestTrade + prevDailyBar in one call
+    const d = await alpData('/stocks/snapshots', {symbols: syms, feed: 'iex'});
     const map = {};
-    // Also fetch previous-day bars for % change calculation
-    const prevBarsArr = await Promise.allSettled(symbols.map(s => getBars(s)));
-    symbols.forEach((sym, i) => {
-      const t = trades[sym];
-      if (!t) return;
-      const price = t.p;
-      const bars = prevBarsArr[i].status === 'fulfilled' ? prevBarsArr[i].value : [];
-      const prevClose = bars.length >= 2 ? bars[bars.length-2].c : (bars.length ? bars[0].c : price);
-      const pct = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+    symbols.forEach(sym => {
+      const snap = d[sym];
+      if (!snap) return;
+      const price = snap.latestTrade?.p || snap.minuteBar?.c || snap.dailyBar?.c;
+      if (!price) return;
+      const prevClose = snap.prevDailyBar?.c || snap.dailyBar?.o || price;
+      const rawPct = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+      // Sanity check: >30% daily move almost certainly means bad/stale data
+      const pct = Math.abs(rawPct) > 30 ? null : rawPct;
       map[sym] = {price, pct, prevClose};
     });
     return map;
@@ -204,8 +204,8 @@ async function loadMarketStrip() {
     {sym:'DIA', name:'Dow Jones ETF'},
   ].map(({sym, name}) => {
     const q = etfPrices[sym];
-    if (!q) return {ticker:sym, name, price:'—', pct:0};
-    return {ticker:sym, name, price:'$'+q.price.toFixed(2), pct:+q.pct.toFixed(2)};
+    if (!q) return {ticker:sym, name, price:'—', pct:null};
+    return {ticker:sym, name, price:'$'+q.price.toFixed(2), pct:q.pct!=null?+q.pct.toFixed(2):null};
   });
 
   const btc = cryptoData?.bitcoin;
@@ -244,7 +244,8 @@ async function loadAll() {
   const holdings = positions.map(p=>{
     const live = liveQuotes[p.symbol];
     const price  = live ? live.price  : +(p.current_price||0);
-    const pct    = live ? live.pct    : +(p.change_today||0)*100;
+    // live.pct is null when day% looked like bad data (>30% move)
+    const pct    = live ? (live.pct !== null ? live.pct : null) : +(p.change_today||0)*100;
     const shares = +p.qty;
     const costBasis = +p.avg_entry_price;
     const value  = price * shares;
@@ -756,7 +757,7 @@ function Holdings({holdings}){
                       {h.price>=h.costBasis?'▲':'▼'} {Math.abs(((h.price-h.costBasis)/h.costBasis)*100).toFixed(1)}% vs now
                     </div>
                   </td>
-                  <td className="num" style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)',color:up?'var(--up)':'var(--down)'}}>{up?'+':''}{h.dayPct.toFixed(2)}%</td>
+                  <td className="num" style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)',color:h.dayPct!=null?(h.dayPct>=0?'var(--up)':'var(--down)'):'var(--text-3)'}}>{h.dayPct!=null?`${h.dayPct>=0?'+':''}${h.dayPct.toFixed(2)}%`:'?'}</td>
                   <td className="num" style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)',color:'var(--text-1)'}}>{h.shares.toFixed(4)}</td>
                   <td className="num" style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)',fontWeight:500}}>{fmtMoney(h.value)}</td>
                   <td className="num" style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)',color:gainUp?'var(--up)':'var(--down)'}}>
@@ -858,7 +859,7 @@ function WatchStrip({marketStrip}){
     <div style={{background:'var(--bg-1)',border:'1px solid var(--border)',borderRadius:14,padding:'12px 18px',display:'flex',alignItems:'center',overflowX:'auto'}}>
       <div style={{fontSize:10.5,color:'var(--text-3)',textTransform:'uppercase',letterSpacing:'0.12em',marginRight:18,fontWeight:500,whiteSpace:'nowrap'}}>Markets</div>
       {items.map((w,i)=>{
-        const up=w.pct>=0;
+        const up=w.pct!=null&&w.pct>=0;
         return (
           <div key={w.ticker} style={{display:'flex',alignItems:'center',gap:10,padding:'0 22px',borderLeft:i===0?'none':'1px solid var(--border)',whiteSpace:'nowrap'}}>
             <div>
@@ -867,7 +868,7 @@ function WatchStrip({marketStrip}){
             </div>
             <div style={{textAlign:'right'}}>
               <div className="num" style={{fontSize:13,fontWeight:500}}>{w.price}</div>
-              <div className="num" style={{fontSize:11,color:up?'var(--up)':'var(--down)',marginTop:1}}>{up?'+':''}{w.pct.toFixed(2)}%</div>
+              <div className="num" style={{fontSize:11,color:up?'var(--up)':'var(--down)',marginTop:1}}>{w.pct!=null?`${up?'+':''}${w.pct.toFixed(2)}%`:'—'}</div>
             </div>
           </div>
         );
