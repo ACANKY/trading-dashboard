@@ -134,6 +134,26 @@ async function getBars(sym) {
   } catch { return []; }
 }
 
+// Detail chart bars — supports 1D intraday through 1Y daily
+async function getDetailBars(sym, range) {
+  const R = {
+    '1D':  {tf:'15Min', limit:30},
+    '5D':  {tf:'1Hour', limit:50},
+    '10D': {tf:'1Hour', limit:100},
+    '1M':  {tf:'1Day',  limit:23},
+    '3M':  {tf:'1Day',  limit:66},
+    '6M':  {tf:'1Day',  limit:132},
+    '1Y':  {tf:'1Day',  limit:253},
+  };
+  const {tf, limit} = R[range] || R['1M'];
+  try {
+    const params = {timeframe:tf, limit, adjustment:'raw', feed:'iex'};
+    if(range==='1D') params.start = new Date().toISOString().split('T')[0];
+    const d = await alpData(`/stocks/${sym}/bars`, params);
+    return Array.isArray(d.bars) ? d.bars : [];
+  } catch { return []; }
+}
+
 function calcMomentum(bars) {
   if(!bars||bars.length<5) return null;
   const c=bars.map(b=>b.c);
@@ -706,7 +726,7 @@ function Sparkline({up}){
   return <svg width={ww} height={hh} style={{display:'block'}}><path d={d} fill="none" stroke={up?'var(--up)':'var(--down)'} strokeWidth="1.4" strokeLinecap="round"/></svg>;
 }
 
-function Holdings({holdings}){
+function Holdings({holdings,onSelect}){
   if(!holdings||!holdings.length) return (
     <div style={{background:'var(--bg-1)',border:'1px solid var(--border)',borderRadius:14,padding:40,textAlign:'center',color:'var(--text-3)'}}>
       No open positions
@@ -737,6 +757,7 @@ function Holdings({holdings}){
               const isLast=i===holdings.length-1;
               return (
                 <tr key={h.ticker} style={{transition:'background .1s',cursor:'pointer'}}
+                    onClick={()=>onSelect&&onSelect(h.ticker)}
                     onMouseEnter={e=>e.currentTarget.style.background='var(--bg-2)'}
                     onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
                   <td style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)',paddingLeft:20}}>
@@ -1218,7 +1239,7 @@ function CapitolFeed({capitol}){
 // ═══════════════════════════════════════════════════════
 // TECHNICAL SIGNALS PANEL
 // ═══════════════════════════════════════════════════════
-function SignalsPanel({signals,holdings}){
+function SignalsPanel({signals,holdings,onSelect}){
   const [filter,setFilter]=useState('all');
   if(!signals||!signals.length) return null;
 
@@ -1261,7 +1282,8 @@ function SignalsPanel({signals,holdings}){
           const isLast=i===filtered.length-1;
           return (
             <div key={s.symbol}
-              style={{display:'grid',gridTemplateColumns:'2fr 1.2fr 1.2fr 1fr 1.8fr',gap:12,alignItems:'center',padding:'11px 20px',borderBottom:isLast?'none':'1px solid var(--border)',transition:'background .1s',cursor:'default'}}
+              style={{display:'grid',gridTemplateColumns:'2fr 1.2fr 1.2fr 1fr 1.8fr',gap:12,alignItems:'center',padding:'11px 20px',borderBottom:isLast?'none':'1px solid var(--border)',transition:'background .1s',cursor:'pointer'}}
+              onClick={()=>onSelect&&onSelect(s.symbol)}
               onMouseEnter={e=>e.currentTarget.style.background='var(--bg-2)'}
               onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
 
@@ -1443,6 +1465,188 @@ function OrdersPanel(){
 }
 
 // ═══════════════════════════════════════════════════════
+// STOCK DETAIL MODAL
+// ═══════════════════════════════════════════════════════
+function StockModal({symbol, holdings, onClose}){
+  const RANGES=['1D','5D','10D','1M','3M','6M','1Y'];
+  const [range,setRange]=useState('3M');
+  const [bars,setBars]=useState([]);
+  const [chartLoading,setChartLoading]=useState(true);
+  const wrapRef=useRef(null);
+  const [w,setW]=useState(600);
+  const [hover,setHover]=useState(null);
+  const isMobile=useIsMobile();
+
+  const pos=holdings?.find(h=>h.ticker===symbol);
+
+  useEffect(()=>{
+    setChartLoading(true); setBars([]); setHover(null);
+    getDetailBars(symbol,range).then(b=>{setBars(b);setChartLoading(false);});
+  },[symbol,range]);
+
+  useEffect(()=>{
+    const ro=new ResizeObserver(entries=>{for(const e of entries)setW(Math.floor(e.contentRect.width));});
+    if(wrapRef.current)ro.observe(wrapRef.current);
+    return()=>ro.disconnect();
+  },[]);
+
+  useEffect(()=>{
+    const onKey=e=>{if(e.key==='Escape')onClose();};
+    document.addEventListener('keydown',onKey);
+    return()=>document.removeEventListener('keydown',onKey);
+  },[onClose]);
+
+  const rangeChange=bars.length>=2?((bars[bars.length-1].c-bars[0].o)/bars[0].o)*100:null;
+  const displayPrice=hover?hover.d.c:(bars.length?bars[bars.length-1].c:null);
+  const displayPct=hover
+    ?(bars.length?((hover.d.c-bars[0].o)/bars[0].o)*100:null)
+    :rangeChange;
+  const positive=(displayPct||0)>=0;
+
+  // Chart
+  const chartH=isMobile?180:240, pad={l:6,r:6,t:8,b:24};
+  const vals=bars.map(b=>b.c);
+  const minV=vals.length?Math.min(...vals)*0.993:0;
+  const maxV=vals.length?Math.max(...vals)*1.007:1;
+  const cx=i=>pad.l+(i/(Math.max(vals.length-1,1)))*(w-pad.l-pad.r);
+  const cy=v=>pad.t+(1-(v-minV)/(maxV-minV||1))*(chartH-pad.t-pad.b);
+  const pathD=vals.map((v,i)=>(i?'L':'M')+cx(i).toFixed(2)+' '+cy(v).toFixed(2)).join(' ');
+  const areaD=vals.length?pathD+` L ${cx(vals.length-1).toFixed(2)} ${chartH-pad.b} L ${cx(0).toFixed(2)} ${chartH-pad.b} Z`:'';
+  const lineClr=positive?'var(--up)':'var(--down)';
+
+  // Date label helper
+  const fmtBarDate=b=>{
+    if(!b)return'';
+    const d=new Date(b.t);
+    if(range==='1D')return d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:range==='1Y'?'numeric':undefined});
+  };
+
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:300,background:'rgba(0,0,0,0.75)',display:'flex',alignItems:'center',justifyContent:'center',padding:isMobile?'0':'20px',backdropFilter:'blur(4px)'}}
+      onClick={onClose}>
+      <div style={{background:'var(--bg-1)',border:'1px solid var(--border-strong)',borderRadius:isMobile?'16px 16px 0 0':16,width:isMobile?'100%':'min(780px,96vw)',maxHeight:isMobile?'92vh':'90vh',overflow:'auto',padding:isMobile?'20px 18px 32px':'28px',position:isMobile?'fixed':'relative',bottom:isMobile?0:'auto',boxShadow:'0 24px 80px rgba(0,0,0,0.6)'}}
+        onClick={e=>e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:18}}>
+          <div style={{width:40,height:40,borderRadius:10,display:'grid',placeItems:'center',fontSize:12,fontWeight:600,fontFamily:'Geist Mono,monospace',background:`color-mix(in oklab, ${tickerColor(symbol)} 18%, var(--bg-2))`,color:tickerColor(symbol),flexShrink:0}}>
+            {symbol.slice(0,2)}
+          </div>
+          <div style={{flex:1}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontSize:17,fontWeight:700,fontFamily:'Geist Mono,monospace'}}>{symbol}</span>
+              {pos&&<span style={{fontSize:10,color:'var(--accent)',background:'var(--accent-soft)',padding:'2px 8px',borderRadius:4,fontWeight:600,textTransform:'uppercase'}}>HELD</span>}
+            </div>
+            <div style={{fontSize:12,color:'var(--text-2)',marginTop:1}}>{NAMES[symbol]||symbol}</div>
+          </div>
+          <button onClick={onClose} style={{background:'transparent',border:'1px solid var(--border)',color:'var(--text-2)',width:32,height:32,borderRadius:8,cursor:'pointer',fontSize:16,display:'grid',placeItems:'center',flexShrink:0}}>✕</button>
+        </div>
+
+        {/* Price + range change */}
+        <div style={{marginBottom:16}}>
+          <div style={{display:'flex',alignItems:'baseline',gap:12,flexWrap:'wrap'}}>
+            <div className="num" style={{fontSize:isMobile?28:34,fontWeight:600,letterSpacing:'-0.02em',lineHeight:1}}>
+              {displayPrice?`$${displayPrice.toFixed(2)}`:'—'}
+            </div>
+            {displayPct!==null&&(
+              <div className="num" style={{fontSize:14,fontWeight:500,padding:'4px 10px',borderRadius:6,color:positive?'var(--up)':'var(--down)',background:positive?'var(--up-soft)':'var(--down-soft)'}}>
+                {positive?'▲':'▼'} {Math.abs(displayPct).toFixed(2)}%
+                <span style={{opacity:0.7,marginLeft:6,fontSize:12}}>{hover?fmtBarDate(bars[hover.idx]):range}</span>
+              </div>
+            )}
+          </div>
+          {hover&&<div style={{fontSize:11,color:'var(--text-3)',marginTop:5}}>{fmtBarDate(bars[hover.idx])}</div>}
+        </div>
+
+        {/* Range selector */}
+        <div style={{display:'flex',gap:2,background:'var(--bg-2)',padding:3,borderRadius:8,border:'1px solid var(--border)',marginBottom:14,width:'fit-content'}}>
+          {RANGES.map(r=>(
+            <button key={r} onClick={()=>{setRange(r);setHover(null);}}
+              style={{fontSize:11.5,padding:'5px 10px',borderRadius:6,cursor:'pointer',background:r===range?'var(--bg-4)':'transparent',color:r===range?'var(--text-0)':'var(--text-2)',border:'none',fontWeight:r===range?600:400,fontFamily:'inherit',transition:'all .1s'}}>
+              {r}
+            </button>
+          ))}
+        </div>
+
+        {/* Chart */}
+        <div ref={wrapRef} style={{width:'100%',position:'relative'}}>
+          {chartLoading?(
+            <div style={{height:chartH,display:'grid',placeItems:'center',color:'var(--text-3)'}}>
+              <I.Refresh size={22} className="spin" stroke="var(--accent)"/>
+            </div>
+          ):bars.length<2?(
+            <div style={{height:chartH,display:'grid',placeItems:'center',color:'var(--text-3)',fontSize:13}}>No data available</div>
+          ):(
+            <svg width={w} height={chartH} style={{display:'block',cursor:'crosshair'}}
+              onMouseMove={e=>{
+                const rect=e.currentTarget.getBoundingClientRect();
+                const px=e.clientX-rect.left;
+                const idx=Math.max(0,Math.min(bars.length-1,Math.round((px-pad.l)/(w-pad.l-pad.r)*(bars.length-1))));
+                setHover({idx,x:cx(idx),y:cy(bars[idx].c),d:bars[idx]});
+              }}
+              onMouseLeave={()=>setHover(null)}>
+              <defs>
+                <linearGradient id="sgrd" x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0%" stopColor={positive?'oklch(0.78 0.18 145)':'oklch(0.68 0.22 25)'} stopOpacity="0.22"/>
+                  <stop offset="100%" stopColor={positive?'oklch(0.78 0.18 145)':'oklch(0.68 0.22 25)'} stopOpacity="0"/>
+                </linearGradient>
+              </defs>
+              {[0,1,2,3].map(i=>{
+                const v=minV+(maxV-minV)*(i/3);
+                return <g key={i}>
+                  <line x1={pad.l} x2={w-pad.r} y1={cy(v)} y2={cy(v)} stroke="var(--border)" strokeDasharray="2 4"/>
+                  <text x={w-pad.r-2} y={cy(v)-4} textAnchor="end" fontSize="10" fill="var(--text-3)" className="num">{fmtCompact(v)}</text>
+                </g>;
+              })}
+              {/* Date ticks at bottom */}
+              {[0,Math.floor(bars.length/4),Math.floor(bars.length/2),Math.floor(bars.length*3/4),bars.length-1].filter((v,i,a)=>a.indexOf(v)===i).map(i=>(
+                <text key={i} x={cx(i)} y={chartH-6} textAnchor="middle" fontSize="10" fill="var(--text-3)" className="num">{fmtBarDate(bars[i])}</text>
+              ))}
+              <path d={areaD} fill="url(#sgrd)"/>
+              <path d={pathD} fill="none" stroke={lineClr} strokeWidth="1.8"/>
+              {hover&&<>
+                <line x1={hover.x} x2={hover.x} y1={pad.t} y2={chartH-pad.b} stroke="var(--border-strong)" strokeWidth="1" strokeDasharray="3 3"/>
+                <circle cx={hover.x} cy={hover.y} r={4} fill={lineClr} stroke="var(--bg-1)" strokeWidth="2"/>
+                <rect x={Math.min(hover.x+8,w-90)} y={hover.y-22} width={82} height={20} rx={5} fill="var(--bg-3)" stroke="var(--border)"/>
+                <text x={Math.min(hover.x+12,w-86)} y={hover.y-8} fontSize="11" fill="var(--text-0)" className="num">${hover.d.c.toFixed(2)}</text>
+              </>}
+            </svg>
+          )}
+        </div>
+
+        {/* OHLV row on hover */}
+        {hover&&(
+          <div style={{display:'flex',gap:16,fontSize:11,color:'var(--text-2)',marginTop:8,fontFamily:'Geist Mono,monospace'}}>
+            {[['O',hover.d.o],['H',hover.d.h],['L',hover.d.l],['C',hover.d.c]].map(([k,v])=>(
+              <span key={k}><span style={{color:'var(--text-3)'}}>{k} </span>${v.toFixed(2)}</span>
+            ))}
+          </div>
+        )}
+
+        {/* Position details if held */}
+        {pos&&(
+          <div style={{marginTop:18,display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)',gap:12,borderTop:'1px solid var(--border)',paddingTop:16}}>
+            {[
+              {label:'Bought At',value:`$${pos.costBasis.toFixed(2)}`},
+              {label:'Current',value:`$${pos.price.toFixed(2)}`},
+              {label:'Shares',value:pos.shares.toFixed(4)},
+              {label:'Total P&L',value:`${pos.unrealizedPl>=0?'+':''}${fmtMoney(pos.unrealizedPl)}`,sub:`${pos.unrealizedPl>=0?'+':''}${pos.unrealizedPlPct.toFixed(2)}%`,color:pos.unrealizedPl>=0?'var(--up)':'var(--down)'},
+            ].map(k=>(
+              <div key={k.label}>
+                <div style={{fontSize:10,color:'var(--text-3)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:4}}>{k.label}</div>
+                <div className="num" style={{fontSize:15,fontWeight:600,color:k.color||'var(--text-0)'}}>{k.value}</div>
+                {k.sub&&<div className="num" style={{fontSize:11,color:k.color||'var(--text-2)',marginTop:1}}>{k.sub}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════
 // MOBILE BOTTOM NAV
 // ═══════════════════════════════════════════════════════
 function BottomNav({active,setActive}){
@@ -1481,6 +1685,7 @@ function App(){
   const [lastRefresh,setLastRefresh]=useState(null);
   const [countdown,setCountdown]=useState(CFG.refreshMs/1000);
   const [active,setActive]=useState('overview');
+  const [selectedStock,setSelectedStock]=useState(null);
   const isMobile=useIsMobile();
 
   const refresh=useCallback(async(manual=false)=>{
@@ -1593,12 +1798,12 @@ function App(){
               <PortfolioChart portfolio={portfolio} equity_curve={equity_curve}/>
               <AllocationCard holdings={holdings}/>
             </div>
-            <Holdings holdings={holdings}/>
+            <Holdings holdings={holdings} onSelect={setSelectedStock}/>
             <div style={col2('1fr','1fr')}>
               <NewsFeed news={news}/>
               <CapitolFeed capitol={capitol}/>
             </div>
-            <SignalsPanel signals={signals} holdings={holdings}/>
+            <SignalsPanel signals={signals} holdings={holdings} onSelect={setSelectedStock}/>
           </>}
 
           {/* PORTFOLIO */}
@@ -1607,13 +1812,13 @@ function App(){
               <PortfolioChart portfolio={portfolio} equity_curve={equity_curve}/>
               <AllocationCard holdings={holdings}/>
             </div>
-            <Holdings holdings={holdings}/>
+            <Holdings holdings={holdings} onSelect={setSelectedStock}/>
           </>}
 
           {/* WATCHLIST */}
           {active==='watchlist'&&<>
             <WatchStrip marketStrip={marketStrip}/>
-            <SignalsPanel signals={signals} holdings={holdings}/>
+            <SignalsPanel signals={signals} holdings={holdings} onSelect={setSelectedStock}/>
           </>}
 
           {/* ORDERS */}
@@ -1631,13 +1836,14 @@ function App(){
           {/* SIGNALS */}
           {active==='signals'&&<>
             <DailySummary portfolio={portfolio} summary={summary} signals={signals}/>
-            <SignalsPanel signals={signals} holdings={holdings}/>
+            <SignalsPanel signals={signals} holdings={holdings} onSelect={setSelectedStock}/>
           </>}
         </div>
       </div>
 
       {/* Mobile bottom nav — hidden on desktop */}
       {isMobile&&<BottomNav active={active} setActive={setActive}/>}
+      {selectedStock&&<StockModal symbol={selectedStock} holdings={holdings} onClose={()=>setSelectedStock(null)}/>}
     </div>
   );
 }
