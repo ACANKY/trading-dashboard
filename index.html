@@ -302,6 +302,7 @@ const RSS_FEEDS = [
 // 15-min cache — rss2json.com free tier is 500 req/day
 let _newsCache = null;
 let _newsCacheTs = 0;
+function bustNewsCache(){ _newsCacheTs = 0; }
 
 async function fetchRSSFeed(feed) {
   try {
@@ -1282,13 +1283,16 @@ function BottomNav({active,setActive}){
 function App(){
   const [data,setData]=useState(null);
   const [loading,setLoading]=useState(true);
+  const [refreshing,setRefreshing]=useState(false);
   const [error,setError]=useState(null);
   const [lastRefresh,setLastRefresh]=useState(null);
   const [countdown,setCountdown]=useState(CFG.refreshMs/1000);
   const [active,setActive]=useState('overview');
   const isMobile=useIsMobile();
 
-  const refresh=useCallback(async()=>{
+  const refresh=useCallback(async(manual=false)=>{
+    if(manual) bustNewsCache();
+    setRefreshing(true);
     setError(null);
     try {
       const d=await loadAll();
@@ -1299,6 +1303,7 @@ function App(){
       setError('Failed to load data: '+e.message+'. Check your API keys and network connection.');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   },[]);
 
@@ -1342,8 +1347,8 @@ function App(){
                   ↻{countdown}s
                 </span>
               )}
-              <button onClick={refresh} style={{background:'var(--bg-2)',border:'1px solid var(--border)',color:'var(--text-1)',width:34,height:34,borderRadius:8,cursor:'pointer',display:'grid',placeItems:'center'}}>
-                <I.Refresh size={15}/>
+              <button onClick={()=>refresh(true)} disabled={refreshing} style={{background:'var(--bg-2)',border:'1px solid var(--border)',color:'var(--text-1)',width:34,height:34,borderRadius:8,cursor:refreshing?'default':'pointer',display:'grid',placeItems:'center',opacity:refreshing?0.6:1}}>
+                <I.Refresh size={15} className={refreshing?'spin':''}/>
               </button>
             </>
           ):(
@@ -1361,8 +1366,8 @@ function App(){
                   <span style={{background:'var(--bg-2)',border:'1px solid var(--border)',borderRadius:5,padding:'2px 7px',fontFamily:'Geist Mono,monospace',color:countdown<10?'var(--amber)':'var(--text-3)'}}>↻ {countdown}s</span>
                 </div>
               )}
-              <button onClick={refresh} style={{background:'transparent',border:'1px solid var(--border)',color:'var(--text-1)',height:32,padding:'0 12px',borderRadius:8,cursor:'pointer',fontSize:12.5,display:'inline-flex',alignItems:'center',gap:6}}>
-                <I.Refresh size={13}/> Refresh
+              <button onClick={()=>refresh(true)} disabled={refreshing} style={{background:'transparent',border:'1px solid var(--border)',color:'var(--text-1)',height:32,padding:'0 12px',borderRadius:8,cursor:refreshing?'default':'pointer',fontSize:12.5,display:'inline-flex',alignItems:'center',gap:6,opacity:refreshing?0.6:1}}>
+                <I.Refresh size={13} className={refreshing?'spin':''}/> {refreshing?'Refreshing…':'Refresh'}
               </button>
             </>
           )}
