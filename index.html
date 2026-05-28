@@ -60,6 +60,7 @@ const CFG = {
   secret: "DPtzQFUhAkHke7NG6R4bsg6X1oEr4i2iLKJ4ywZT85io",
   base:   "https://paper-api.alpaca.markets/v2",
   data:   "https://data.alpaca.markets/v2",
+  finnhub:"d8c7n7hr01qidic6nac0d8c7n7hr01qidic6nacg",
   startCapital: 20000,
   refreshMs: 60 * 1000,
 };
@@ -335,62 +336,63 @@ async function fetchAlpacaNews(tickers){
   }catch{return[];}
 }
 
-// 2. Google News RSS — covers Reuters, Bloomberg, CNBC, WSJ, MarketWatch etc.
-// Uses corsproxy.io (same proxy that already works for Capitol Trades in this dashboard)
-const GOOGLE_NEWS_FEEDS=[
-  {topic:'CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB', label:'Business'},
-  {topic:'CAAqIggKIhxDQkFTRHdvSkwyMHZNR1ptZHpJU0FtVnVLQUFQAQ',        label:'Markets'},
-];
-
-// Source colour lookup by publisher name (as returned by Google News)
+// Source name → colour
 const PUB_COLORS={
   'Reuters':'#ff8000','Bloomberg':'#f59e0b','CNBC':'#dc2626',
-  'MarketWatch':'#059669','WSJ':'#1d4ed8','The Wall Street Journal':'#1d4ed8',
-  'Financial Times':'#f97316','Yahoo Finance':'#7c3aed','Barron\'s':'#1d4ed8',
-  'AP':'#cc0000','Associated Press':'#cc0000','Forbes':'#e11d48',
-  'Fortune':'#d97706','Business Insider':'#6366f1',
+  'MarketWatch':'#059669','Dow Jones':'#1d4ed8','WSJ':'#1d4ed8',
+  'The Wall Street Journal':'#1d4ed8','Financial Times':'#f97316',
+  'Yahoo Finance':'#7c3aed',"Barron's":'#1d4ed8','Forbes':'#e11d48',
+  'Fortune':'#d97706','Business Insider':'#6366f1','AP':'#cc0000',
+  'Associated Press':'#cc0000','Seeking Alpha':'#0ea5e9',
+  'Investopedia':'#22d3ee','The Motley Fool':'#a855f7',
 };
-function pubColor(name){
+function pubColor(name=''){
   for(const[k,v] of Object.entries(PUB_COLORS)) if(name.includes(k)) return v;
-  return '#6b7280';
+  return '#8b8b8b';
 }
 
-async function fetchGoogleNews(feed){
+// Finnhub market news — proper financial news API, CORS enabled
+async function fetchFinnhubNews(){
   try{
-    const rssUrl=`https://news.google.com/rss/topics/${feed.topic}?hl=en-US&gl=US&ceid=US:en`;
-    const proxy=`https://corsproxy.io/?${encodeURIComponent(rssUrl)}`;
-    const r=await fetch(proxy,{signal:AbortSignal.timeout(12000)});
+    const r=await fetch(
+      `https://finnhub.io/api/v1/news?category=general&token=${CFG.finnhub}`,
+      {signal:AbortSignal.timeout(10000)}
+    );
     if(!r.ok) return [];
-    const text=await r.text();
-    const doc=new DOMParser().parseFromString(text,'text/xml');
-    return[...doc.querySelectorAll('item')].slice(0,8).map(item=>{
-      // Google News title format: "Headline - Publisher Name"
-      const raw=item.querySelector('title')?.textContent?.trim()||'';
-      const dashIdx=raw.lastIndexOf(' - ');
-      const title  = dashIdx>0 ? raw.slice(0,dashIdx) : raw;
-      const publisher=dashIdx>0 ? raw.slice(dashIdx+3) : feed.label;
-      const link=item.querySelector('link')?.nextSibling?.textContent?.trim()||
-                 item.querySelector('link')?.textContent?.trim()||'';
-      const pubDate=item.querySelector('pubDate')?.textContent?.trim()||'';
-      const date=pubDate?new Date(pubDate):new Date();
-      const srcColor=pubColor(publisher);
-      return{src:publisher,srcColor,time:timeAgo(date.toISOString()),
-        date,tickers:[],title,blurb:'',
-        sentiment:sentimentOf(title),image:null,url:link||null};
-    }).filter(n=>n.title&&n.title.length>8);
-  }catch(e){console.warn(`Google News [${feed.label}] failed:`,e.message);return[];}
+    const items=await r.json();
+    const seen=new Set();
+    return items.slice(0,30).map(n=>{
+      const title=(n.headline||'').trim();
+      if(!title||seen.has(title.slice(0,60))) return null;
+      seen.add(title.slice(0,60));
+      const src=n.source||'News';
+      const srcColor=pubColor(src)||srcFromUrl(n.url||'').color;
+      const date=new Date((n.datetime||0)*1000);
+      return{
+        src,srcColor,
+        time:timeAgo(date.toISOString()),
+        date,tickers:[],
+        title,blurb:(n.summary||'').slice(0,240),
+        sentiment:sentimentOf(title+' '+(n.summary||'')),
+        image:n.image||null,
+        url:n.url||null,
+      };
+    }).filter(Boolean);
+  }catch(e){console.warn('Finnhub news failed:',e.message);return[];}
 }
 
 async function loadNews(tickers){
   if(_newsCache&&(Date.now()-_newsCacheTs)<15*60*1000) return _newsCache;
-  const[alpacaRes,...gnRes]=await Promise.allSettled([
+  const[finnRes,alpacaRes]=await Promise.allSettled([
+    fetchFinnhubNews(),
     fetchAlpacaNews(tickers),
-    ...GOOGLE_NEWS_FEEDS.map(f=>fetchGoogleNews(f)),
   ]);
-  const all=[
-    ...(alpacaRes.status==='fulfilled'?alpacaRes.value:[]),
-    ...gnRes.flatMap(r=>r.status==='fulfilled'?r.value:[]),
-  ];
+  const finnhub =finnRes.status==='fulfilled'?finnRes.value:[];
+  const alpaca  =alpacaRes.status==='fulfilled'?alpacaRes.value:[];
+  // Merge: finnhub first (diverse sources), alpaca for stock-specific items not already in finnhub
+  const titles=new Set(finnhub.map(n=>n.title.slice(0,60)));
+  const extra=alpaca.filter(n=>!titles.has(n.title.slice(0,60)));
+  const all=[...finnhub,...extra];
   all.sort((a,b)=>b.date-a.date);
   const news=all.slice(0,24);
   _newsCache=news; _newsCacheTs=Date.now();
