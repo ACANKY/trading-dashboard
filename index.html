@@ -291,37 +291,38 @@ async function loadAll() {
 
 // ── Multi-source RSS news ─────────────────────────────────────────────────────
 const RSS_FEEDS = [
-  {name:'Yahoo Finance', url:'https://finance.yahoo.com/news/rssindex',                        color:'#7c3aed'},
-  {name:'Bloomberg',     url:'https://feeds.bloomberg.com/markets/news.rss',                   color:'#f59e0b'},
-  {name:'WSJ Markets',   url:'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',                  color:'#1d4ed8'},
-  {name:'WSJ Economy',   url:'https://feeds.a.dj.com/rss/RSSWorldNews.xml',                    color:'#1d4ed8'},
-  {name:'MarketWatch',   url:'https://feeds.marketwatch.com/marketwatch/topstories/',           color:'#059669'},
-  {name:'CNBC Markets',  url:'https://www.cnbc.com/id/100003114/device/rss/rss.html',           color:'#dc2626'},
+  {name:'Yahoo Finance', url:'https://finance.yahoo.com/news/rssindex',                      color:'#7c3aed'},
+  {name:'Bloomberg',     url:'https://feeds.bloomberg.com/markets/news.rss',                 color:'#f59e0b'},
+  {name:'WSJ Markets',   url:'https://feeds.a.dj.com/rss/RSSMarketsMain.xml',                color:'#1d4ed8'},
+  {name:'WSJ Economy',   url:'https://feeds.a.dj.com/rss/RSSWorldNews.xml',                  color:'#1d4ed8'},
+  {name:'MarketWatch',   url:'https://feeds.marketwatch.com/marketwatch/topstories/',         color:'#059669'},
+  {name:'CNBC Markets',  url:'https://www.cnbc.com/id/100003114/device/rss/rss.html',         color:'#dc2626'},
 ];
+
+// 15-min cache — rss2json.com free tier is 500 req/day
+let _newsCache = null;
+let _newsCacheTs = 0;
 
 async function fetchRSSFeed(feed) {
   try {
-    const proxy = 'https://corsproxy.io/?';
-    const r = await fetch(proxy + encodeURIComponent(feed.url), {signal: AbortSignal.timeout(9000)});
+    // rss2json.com converts RSS → JSON and handles CORS natively (no proxy needed)
+    const api = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}&count=5`;
+    const r = await fetch(api, {signal: AbortSignal.timeout(10000)});
     if (!r.ok) return [];
-    const text = await r.text();
-    const doc = new DOMParser().parseFromString(text, 'text/xml');
-    return [...doc.querySelectorAll('item')].slice(0, 5).map(item => {
-      const title   = item.querySelector('title')?.textContent?.trim() || '';
-      // <link> in RSS is a text node after the element — try multiple ways
-      const linkEl  = item.querySelector('link');
-      const link    = linkEl?.textContent?.trim() || linkEl?.nextSibling?.textContent?.trim() || '';
-      const desc    = (item.querySelector('description')?.textContent || '').replace(/<[^>]+>/g,'').trim();
-      const pubDate = item.querySelector('pubDate')?.textContent?.trim() || '';
-      const date    = pubDate ? new Date(pubDate) : new Date();
+    const d = await r.json();
+    if (d.status !== 'ok') return [];
+    return (d.items || []).map(item => {
+      const title = item.title?.trim() || '';
+      const desc  = (item.description || '').replace(/<[^>]+>/g,'').trim();
+      const date  = item.pubDate ? new Date(item.pubDate) : new Date();
       return {
         src: feed.name, srcColor: feed.color,
         time: timeAgo(date.toISOString()),
-        date,
-        tickers: [],
+        date, tickers: [],
         title, blurb: desc.slice(0, 240),
         sentiment: sentimentOf(title + ' ' + desc),
-        image: null, url: link || null,
+        image: item.enclosure?.link || null,
+        url: item.link || null,
       };
     }).filter(n => n.title && n.title.length > 8);
   } catch(e) {
@@ -331,10 +332,14 @@ async function fetchRSSFeed(feed) {
 }
 
 async function loadNews(tickers) {
+  // Serve from cache if < 15 min old (saves API quota)
+  if (_newsCache && (Date.now() - _newsCacheTs) < 15 * 60 * 1000) return _newsCache;
   const results = await Promise.allSettled(RSS_FEEDS.map(f => fetchRSSFeed(f)));
   const all = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
   all.sort((a, b) => b.date - a.date);
-  return all.slice(0, 24);
+  const news = all.slice(0, 24);
+  _newsCache = news; _newsCacheTs = Date.now();
+  return news;
 }
 
 async function loadCapitol() {
