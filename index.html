@@ -724,7 +724,7 @@ function Holdings({holdings}){
         <table style={{width:'100%',borderCollapse:'collapse'}}>
           <thead>
             <tr>
-              {['Symbol','Last','Day %','Shares','Value','P&L','Trend',''].map((h,i)=>(
+              {['Symbol','Last','Bought At','Day %','Shares','Value','Total P&L','Trend',''].map((h,i)=>(
                 <th key={h} style={{fontSize:10.5,color:'var(--text-3)',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:500,textAlign:'left',padding:'10px 16px',borderBottom:'1px solid var(--border)',paddingLeft:i===0?20:16}}>{h}</th>
               ))}
             </tr>
@@ -750,6 +750,12 @@ function Holdings({holdings}){
                     </div>
                   </td>
                   <td className="num" style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)'}}>${h.price.toFixed(2)}</td>
+                  <td className="num" style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)'}}>
+                    <div style={{color:'var(--text-1)'}}>${h.costBasis.toFixed(2)}</div>
+                    <div style={{fontSize:11,color:h.price>=h.costBasis?'var(--up)':'var(--down)',marginTop:1}}>
+                      {h.price>=h.costBasis?'▲':'▼'} {Math.abs(((h.price-h.costBasis)/h.costBasis)*100).toFixed(1)}% vs now
+                    </div>
+                  </td>
                   <td className="num" style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)',color:up?'var(--up)':'var(--down)'}}>{up?'+':''}{h.dayPct.toFixed(2)}%</td>
                   <td className="num" style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)',color:'var(--text-1)'}}>{h.shares.toFixed(4)}</td>
                   <td className="num" style={{padding:'12px 16px',fontSize:13,borderBottom:isLast?'none':'1px solid var(--border)',fontWeight:500}}>{fmtMoney(h.value)}</td>
