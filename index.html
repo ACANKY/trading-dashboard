@@ -335,44 +335,61 @@ async function fetchAlpacaNews(tickers){
   }catch{return[];}
 }
 
-// 2. RSS feeds via allorigins proxy — supplements Alpaca with broader market news
-const RSS_FEEDS=[
-  {name:'Reuters',     url:'https://feeds.reuters.com/reuters/businessNews', color:'#ff8000'},
-  {name:'Reuters Mkts',url:'https://feeds.reuters.com/reuters/marketsNews',  color:'#ff8000'},
-  {name:'CNBC Markets',url:'https://www.cnbc.com/id/100003114/device/rss/rss.html',color:'#dc2626'},
-  {name:'MarketWatch', url:'https://feeds.marketwatch.com/marketwatch/topstories/',color:'#059669'},
-  {name:'AP Business', url:'https://feeds.apnews.com/rss/apf-business',      color:'#cc0000'},
+// 2. Google News RSS — covers Reuters, Bloomberg, CNBC, WSJ, MarketWatch etc.
+// Uses corsproxy.io (same proxy that already works for Capitol Trades in this dashboard)
+const GOOGLE_NEWS_FEEDS=[
+  {topic:'CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB', label:'Business'},
+  {topic:'CAAqIggKIhxDQkFTRHdvSkwyMHZNR1ptZHpJU0FtVnVLQUFQAQ',        label:'Markets'},
 ];
-async function fetchRSSFeed(feed){
+
+// Source colour lookup by publisher name (as returned by Google News)
+const PUB_COLORS={
+  'Reuters':'#ff8000','Bloomberg':'#f59e0b','CNBC':'#dc2626',
+  'MarketWatch':'#059669','WSJ':'#1d4ed8','The Wall Street Journal':'#1d4ed8',
+  'Financial Times':'#f97316','Yahoo Finance':'#7c3aed','Barron\'s':'#1d4ed8',
+  'AP':'#cc0000','Associated Press':'#cc0000','Forbes':'#e11d48',
+  'Fortune':'#d97706','Business Insider':'#6366f1',
+};
+function pubColor(name){
+  for(const[k,v] of Object.entries(PUB_COLORS)) if(name.includes(k)) return v;
+  return '#6b7280';
+}
+
+async function fetchGoogleNews(feed){
   try{
-    const proxy=`https://api.allorigins.win/get?url=${encodeURIComponent(feed.url)}`;
-    const r=await fetch(proxy,{signal:AbortSignal.timeout(10000)});
+    const rssUrl=`https://news.google.com/rss/topics/${feed.topic}?hl=en-US&gl=US&ceid=US:en`;
+    const proxy=`https://corsproxy.io/?${encodeURIComponent(rssUrl)}`;
+    const r=await fetch(proxy,{signal:AbortSignal.timeout(12000)});
     if(!r.ok) return [];
-    const j=await r.json();
-    if(!j.contents) return [];
-    const doc=new DOMParser().parseFromString(j.contents,'text/xml');
-    return[...doc.querySelectorAll('item')].slice(0,4).map(item=>{
-      const title=item.querySelector('title')?.textContent?.trim()||'';
-      const link=item.getElementsByTagName('link')[0]?.textContent?.trim()||'';
-      const desc=(item.querySelector('description')?.textContent||'').replace(/<[^>]+>/g,'').trim();
+    const text=await r.text();
+    const doc=new DOMParser().parseFromString(text,'text/xml');
+    return[...doc.querySelectorAll('item')].slice(0,8).map(item=>{
+      // Google News title format: "Headline - Publisher Name"
+      const raw=item.querySelector('title')?.textContent?.trim()||'';
+      const dashIdx=raw.lastIndexOf(' - ');
+      const title  = dashIdx>0 ? raw.slice(0,dashIdx) : raw;
+      const publisher=dashIdx>0 ? raw.slice(dashIdx+3) : feed.label;
+      const link=item.querySelector('link')?.nextSibling?.textContent?.trim()||
+                 item.querySelector('link')?.textContent?.trim()||'';
       const pubDate=item.querySelector('pubDate')?.textContent?.trim()||'';
       const date=pubDate?new Date(pubDate):new Date();
-      return{src:feed.name,srcColor:feed.color,time:timeAgo(date.toISOString()),
-        date,tickers:[],title,blurb:desc.slice(0,240),
-        sentiment:sentimentOf(title+' '+desc),image:null,url:link||null};
+      const srcColor=pubColor(publisher);
+      return{src:publisher,srcColor,time:timeAgo(date.toISOString()),
+        date,tickers:[],title,blurb:'',
+        sentiment:sentimentOf(title),image:null,url:link||null};
     }).filter(n=>n.title&&n.title.length>8);
-  }catch(e){console.warn(`RSS [${feed.name}] failed:`,e.message);return[];}
+  }catch(e){console.warn(`Google News [${feed.label}] failed:`,e.message);return[];}
 }
 
 async function loadNews(tickers){
   if(_newsCache&&(Date.now()-_newsCacheTs)<15*60*1000) return _newsCache;
-  const[alpacaRes,...rssRes]=await Promise.allSettled([
+  const[alpacaRes,...gnRes]=await Promise.allSettled([
     fetchAlpacaNews(tickers),
-    ...RSS_FEEDS.map(f=>fetchRSSFeed(f)),
+    ...GOOGLE_NEWS_FEEDS.map(f=>fetchGoogleNews(f)),
   ]);
   const all=[
     ...(alpacaRes.status==='fulfilled'?alpacaRes.value:[]),
-    ...rssRes.flatMap(r=>r.status==='fulfilled'?r.value:[]),
+    ...gnRes.flatMap(r=>r.status==='fulfilled'?r.value:[]),
   ];
   all.sort((a,b)=>b.date-a.date);
   const news=all.slice(0,24);
@@ -935,8 +952,8 @@ function NewsFeed({news}){
             <span style={{fontSize:10,color:'var(--up)',background:'var(--up-soft)',padding:'2px 7px',borderRadius:999,fontWeight:500,textTransform:'uppercase',letterSpacing:'0.04em'}}>Multi-Source · Live</span>
           </div>
           <div style={{fontSize:11,color:'var(--text-2)',marginTop:4,display:'flex',gap:8,flexWrap:'wrap'}}>
-            {[{name:'Reuters',color:'#ff8000'},{name:'CNBC',color:'#dc2626'},{name:'MarketWatch',color:'#059669'},{name:'AP News',color:'#cc0000'},{name:'Bloomberg',color:'#f59e0b'},{name:'WSJ',color:'#1d4ed8'}].map(f=>(
-              <span key={f.name} style={{color:f.color,fontWeight:500,fontSize:10}}>{f.name}</span>
+            {[['Reuters','#ff8000'],['Bloomberg','#f59e0b'],['CNBC','#dc2626'],['MarketWatch','#059669'],['WSJ','#1d4ed8'],['FT','#f97316'],['AP','#cc0000'],['Forbes','#e11d48']].map(([n,c])=>(
+              <span key={n} style={{color:c,fontWeight:500,fontSize:10}}>{n}</span>
             ))}
           </div>
         </div>
