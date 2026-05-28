@@ -1025,7 +1025,7 @@ function BotAnalysis(){
                     <span style={{fontSize:16}}>{actionIcon[a.type]||'⚪'}</span>
                     <span style={{fontWeight:600,fontFamily:'Geist Mono,monospace',minWidth:60}}>{a.symbol}</span>
                     <span style={{color:'var(--text-2)'}}>{actionLabel[a.type]||a.type}</span>
-                    {a.pct!==0&&<span className="num" style={{marginLeft:'auto',color:a.pct>=0?'var(--up)':'var(--down)',fontWeight:500}}>{a.pct>=0?'+':''}{(a.pct*100).toFixed?.(a.pct*100).toFixed(1)+'%':''}</span>}
+                    {a.pct!==0&&<span className="num" style={{marginLeft:'auto',color:a.pct>=0?'var(--up)':'var(--down)',fontWeight:500}}>{a.pct>=0?'+':''}{(a.pct*100).toFixed(1)}%</span>}
                   </div>
                 ))}
               </div>
